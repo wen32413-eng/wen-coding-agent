@@ -1,8 +1,6 @@
 import json
 from collections import deque
 
-from openai import OpenAI
-
 from config import (
     LLM_API_KEY,
     LLM_BASE_URL,
@@ -10,39 +8,37 @@ from config import (
     MAX_STEPS,
     MAX_CONTEXT_STEPS,
 )
+
 from context_manager import ContextManager
+from llm import LLMClient
 from prompts import SYSTEM_PROMPT
-from tools import TOOL_SCHEMAS, execute_tool
+from runtime import (
+    ToolResult,
+    RunStats,
+)
+from tools import (
+    TOOL_SCHEMAS,
+    execute_tool,
+)
 
 
 class CodingAgent:
     def __init__(self):
-        client_args = {
-            "api_key": LLM_API_KEY,
-        }
-
-        if LLM_BASE_URL:
-            client_args["base_url"] = LLM_BASE_URL
-
-        self.client = OpenAI(**client_args)
-
-        self.recent_tool_calls = deque(maxlen=3)
-
-    def call_model(self, messages):
-        response = self.client.chat.completions.create(
+        self.llm = LLMClient(
+            api_key=LLM_API_KEY,
+            base_url=LLM_BASE_URL,
             model=LLM_MODEL,
-            messages=messages,
-            tools=TOOL_SCHEMAS,
-            tool_choice="auto",
         )
 
-        return response.choices[0].message
+        self.recent_tool_calls = deque(
+            maxlen=3
+        )
 
     def is_repeated_call(
         self,
-        name,
-        arguments,
-    ):
+        name: str,
+        arguments: dict,
+    ) -> bool:
         signature = json.dumps(
             {
                 "name": name,
@@ -52,16 +48,44 @@ class CodingAgent:
             ensure_ascii=False,
         )
 
-        self.recent_tool_calls.append(signature)
+        self.recent_tool_calls.append(
+            signature
+        )
 
-        if len(self.recent_tool_calls) < 3:
+        if len(
+            self.recent_tool_calls
+        ) < 3:
             return False
 
-        return len(set(self.recent_tool_calls)) == 1
+        return (
+            len(
+                set(
+                    self.recent_tool_calls
+                )
+            )
+            == 1
+        )
 
-    def run(self, task: str):
-        # A new task should start with fresh loop-detection state.
+    def run(
+        self,
+        task: str,
+    ):
+        """
+        Main agent loop:
+
+        Task
+          -> LLM
+          -> Tool Call
+          -> Local Execution
+          -> Observation
+          -> LLM
+          -> ...
+          -> Final Answer
+        """
+
         self.recent_tool_calls.clear()
+
+        stats = RunStats()
 
         context = ContextManager(
             system_prompt=SYSTEM_PROMPT,
@@ -75,61 +99,93 @@ class CodingAgent:
         print("=" * 60)
         print(task)
 
-        for step in range(1, MAX_STEPS + 1):
+        for step in range(
+            1,
+            MAX_STEPS + 1,
+        ):
+            stats.record_step(step)
+
             print()
-            print(f"[Step {step}/{MAX_STEPS}]")
             print(
-                f"Context steps: "
-                f"{context.step_count()}/{MAX_CONTEXT_STEPS}"
+                f"[Step {step}/{MAX_STEPS}]"
             )
 
-            # ---------------------------------------------
-            # 1. Ask model for the next action
-            # ---------------------------------------------
+            print(
+                "Context steps: "
+                f"{context.step_count()}/"
+                f"{MAX_CONTEXT_STEPS}"
+            )
+
+            # ==================================================
+            # 1. Ask model for next action
+            # ==================================================
 
             try:
-                assistant_message = self.call_model(
-                    context.get_messages()
+                assistant_message = (
+                    self.llm.chat(
+                        messages=(
+                            context.get_messages()
+                        ),
+                        tools=TOOL_SCHEMAS,
+                    )
                 )
 
             except Exception as exc:
-                result = (
-                    "Agent stopped because the LLM request failed:\n"
-                    f"{type(exc).__name__}: {exc}"
+                final = (
+                    "Agent stopped because "
+                    "the LLM request failed:\n"
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
                 )
 
-                print(result)
-                return result
+                print(final)
+                stats.print_summary()
 
-            # ---------------------------------------------
-            # 2. Serialize model response
-            # ---------------------------------------------
+                return final
+
+            # ==================================================
+            # 2. Serialize model response for conversation
+            # ==================================================
 
             serialized_message = {
                 "role": "assistant",
-                "content": assistant_message.content,
+                "content": (
+                    assistant_message.content
+                ),
             }
 
             if assistant_message.tool_calls:
-                serialized_message["tool_calls"] = []
+                serialized_message[
+                    "tool_calls"
+                ] = []
 
-                for call in assistant_message.tool_calls:
-                    serialized_message["tool_calls"].append(
+                for call in (
+                    assistant_message.tool_calls
+                ):
+                    serialized_message[
+                        "tool_calls"
+                    ].append(
                         {
                             "id": call.id,
                             "type": call.type,
                             "function": {
-                                "name": call.function.name,
-                                "arguments": call.function.arguments,
+                                "name": (
+                                    call.function.name
+                                ),
+                                "arguments": (
+                                    call.function.arguments
+                                ),
                             },
                         }
                     )
 
-            # ---------------------------------------------
-            # 3. No tools requested = final answer
-            # ---------------------------------------------
+            # ==================================================
+            # 3. No tool call => task complete
+            # ==================================================
 
-            if not assistant_message.tool_calls:
+            if (
+                not assistant_message.tool_calls
+            ):
                 final_answer = (
                     assistant_message.content
                     or "Task completed."
@@ -141,39 +197,70 @@ class CodingAgent:
                 print("=" * 60)
                 print(final_answer)
 
+                stats.print_summary()
+
                 return final_answer
 
-            # ---------------------------------------------
+            # ==================================================
             # 4. Execute requested tools
-            # ---------------------------------------------
+            # ==================================================
 
             tool_messages = []
 
-            for tool_call in assistant_message.tool_calls:
-                name = tool_call.function.name
+            for tool_call in (
+                assistant_message.tool_calls
+            ):
+                name = (
+                    tool_call.function.name
+                )
+
+                # ----------------------------------------------
+                # Parse model-generated JSON arguments
+                # ----------------------------------------------
 
                 try:
                     arguments = json.loads(
-                        tool_call.function.arguments or "{}"
+                        tool_call.function.arguments
+                        or "{}"
                     )
 
                 except json.JSONDecodeError as exc:
-                    result = (
-                        "ToolError: model generated invalid JSON "
-                        f"arguments: {exc}"
+                    tool_result = ToolResult(
+                        ok=False,
+                        text=(
+                            "Model generated invalid "
+                            "JSON arguments: "
+                            f"{exc}"
+                        ),
+                    )
+
+                    result_text = (
+                        tool_result.to_model_text()
+                    )
+
+                    stats.record_tool(
+                        name=name,
+                        arguments={},
+                        result=tool_result,
                     )
 
                     tool_messages.append(
                         {
                             "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": result,
+                            "tool_call_id": (
+                                tool_call.id
+                            ),
+                            "content": (
+                                result_text
+                            ),
                         }
                     )
 
                     continue
 
-                print(f"Tool: {name}")
+                print(
+                    f"Tool: {name}"
+                )
 
                 print(
                     "Args:",
@@ -183,56 +270,103 @@ class CodingAgent:
                     ),
                 )
 
-                # -----------------------------------------
-                # 5. Repeated call detection
-                # -----------------------------------------
+                # ----------------------------------------------
+                # Detect obvious repeated-action loops
+                # ----------------------------------------------
 
                 if self.is_repeated_call(
                     name,
                     arguments,
                 ):
-                    result = (
-                        "ToolError: identical tool call repeated "
-                        "three times. Reconsider your approach."
+                    tool_result = ToolResult(
+                        ok=False,
+                        text=(
+                            "Identical tool call was "
+                            "repeated three times. "
+                            "Reconsider the approach "
+                            "using new evidence."
+                        ),
                     )
 
                 else:
-                    result = execute_tool(
-                        name,
-                        arguments,
+                    tool_result = (
+                        execute_tool(
+                            name,
+                            arguments,
+                        )
                     )
 
-                print("Result:")
-                print(result[:3000])
+                stats.record_tool(
+                    name=name,
+                    arguments=arguments,
+                    result=tool_result,
+                )
 
-                if len(result) > 3000:
+                result_text = (
+                    tool_result.to_model_text()
+                )
+
+                status = (
+                    "SUCCESS"
+                    if tool_result.ok
+                    else "ERROR"
+                )
+
+                print(
+                    f"Result [{status}]:"
+                )
+
+                print(
+                    result_text[:3000]
+                )
+
+                if (
+                    len(result_text)
+                    > 3000
+                ):
                     print(
-                        "... [terminal output truncated]"
+                        "... [terminal output "
+                        "truncated]"
                     )
 
                 tool_messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": result,
+                        "tool_call_id": (
+                            tool_call.id
+                        ),
+                        "content": (
+                            result_text
+                        ),
                     }
                 )
 
-            # ---------------------------------------------
-            # 6. Store one complete interaction block
-            # ---------------------------------------------
+            # ==================================================
+            # 5. Store one complete interaction
+            # ==================================================
 
             context.add_step(
-                assistant_message=serialized_message,
-                tool_messages=tool_messages,
+                assistant_message=(
+                    serialized_message
+                ),
+                tool_messages=(
+                    tool_messages
+                ),
             )
 
+        # ======================================================
+        # MAX_STEPS reached
+        # ======================================================
+
         final_answer = (
-            f"Agent stopped after reaching "
+            "Agent stopped after reaching "
             f"MAX_STEPS={MAX_STEPS}. "
             "The task may be incomplete."
         )
 
+        print()
         print(final_answer)
+
+        stats.print_summary()
 
         return final_answer

@@ -1,4 +1,5 @@
 import os
+import re
 import shlex
 import subprocess
 from fnmatch import fnmatch
@@ -12,6 +13,7 @@ from config import (
     MAX_SEARCH_RESULTS,
 )
 
+from runtime import ToolResult
 
 # ============================================================
 # Project filtering
@@ -1038,24 +1040,82 @@ TOOL_FUNCTIONS = {
 def execute_tool(
     name: str,
     arguments: dict,
-) -> str:
+) -> ToolResult:
+    """
+    Execute a local tool and normalize its outcome into ToolResult.
+    """
+
     function = TOOL_FUNCTIONS.get(name)
 
     if function is None:
-        return (
-            f"ToolError: unknown tool: {name}"
+        return ToolResult(
+            ok=False,
+            text=f"Unknown tool: {name}",
         )
 
     try:
-        return function(**arguments)
+        output = function(**arguments)
 
     except TypeError as exc:
-        return (
-            f"ToolError: invalid arguments: {exc}"
+        return ToolResult(
+            ok=False,
+            text=(
+                "Invalid tool arguments: "
+                f"{exc}"
+            ),
         )
 
     except Exception as exc:
-        return (
-            f"ToolError: "
-            f"{type(exc).__name__}: {exc}"
+        return ToolResult(
+            ok=False,
+            text=(
+                f"{type(exc).__name__}: "
+                f"{exc}"
+            ),
         )
+
+    # Existing V0.3 tools return ToolError strings.
+    if (
+        isinstance(output, str)
+        and output.startswith("ToolError:")
+    ):
+        return ToolResult(
+            ok=False,
+            text=output.removeprefix(
+                "ToolError:"
+            ).strip(),
+        )
+
+    metadata = {}
+
+    # run_command may complete normally but return a non-zero exit code.
+    # Treat non-zero exit status as a failed tool observation.
+    if (
+        name == "run_command"
+        and isinstance(output, str)
+    ):
+        match = re.search(
+            r"^Exit code:\s*(-?\d+)",
+            output,
+        )
+
+        if match:
+            exit_code = int(
+                match.group(1)
+            )
+
+            metadata[
+                "exit_code"
+            ] = exit_code
+
+            return ToolResult(
+                ok=(exit_code == 0),
+                text=output,
+                metadata=metadata,
+            )
+
+    return ToolResult(
+        ok=True,
+        text=str(output),
+        metadata=metadata,
+    )

@@ -59,4 +59,6 @@ Rules:
 
 Use tools to perform the work.
 Do not merely describe what should be changed: inspect, edit, and verify it.
+Use verification results as evidence. A non-zero command exit code means
+the verification failed and the task should normally continue.
 """
