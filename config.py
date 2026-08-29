@@ -18,6 +18,17 @@ MAX_CONTEXT_STEPS = int(
 COMMAND_TIMEOUT = int(
     os.getenv("COMMAND_TIMEOUT", "30")
 )
+MAX_READ_LINES = int(
+    os.getenv("MAX_READ_LINES", "400")
+)
+
+MAX_TREE_ENTRIES = int(
+    os.getenv("MAX_TREE_ENTRIES", "300")
+)
+
+MAX_SEARCH_RESULTS = int(
+    os.getenv("MAX_SEARCH_RESULTS", "50")
+)
 def validate_config():
     if not LLM_API_KEY:
         raise RuntimeError(

@@ -6,3 +6,4 @@ venv/
 
 workspace/*
 !workspace/.gitkeep
+tools_backup_*.py
