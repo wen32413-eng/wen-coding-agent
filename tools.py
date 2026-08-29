@@ -1,3 +1,5 @@
+import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -114,31 +116,97 @@ def replace_in_file(path: str, old: str, new: str) -> str:
 
     except Exception as exc:
         return f"ToolError: {type(exc).__name__}: {exc}"
-DANGEROUS_COMMAND_PATTERNS = [
-    "rm -rf /",
-    "rm -rf /*",
-    "mkfs",
-    "shutdown",
-    "reboot",
-    "poweroff",
-]
+
+ALLOWED_EXECUTABLES = {
+    "python",
+    "python3",
+    "pytest",
+    "git",
+    "node",
+    "npm",
+    "npx",
+    "java",
+    "javac",
+    "gcc",
+    "g++",
+    "cmake",
+    "ctest",
+    "cargo",
+    "go",
+    "dotnet",
+}
+
+
+ALLOWED_GIT_SUBCOMMANDS = {
+    "status",
+    "diff",
+    "log",
+    "show",
+}
 
 
 def run_command(command: str) -> str:
-    try:
-        lower_command = command.lower()
+    """
+    Execute a restricted development command inside WORKSPACE.
 
-        for pattern in DANGEROUS_COMMAND_PATTERNS:
-            if pattern.lower() in lower_command:
+    Commands are parsed into argv and executed with shell=False.
+    This prevents shell operators such as:
+        &&
+        |
+        >
+        ;
+    from being interpreted by a command shell.
+    """
+
+    try:
+        if not command.strip():
+            return "ToolError: empty command"
+
+        try:
+            args = shlex.split(
+                command,
+                posix=True,
+            )
+
+        except ValueError as exc:
+            return (
+                "ToolError: unable to parse command: "
+                f"{exc}"
+            )
+
+        if not args:
+            return "ToolError: empty command"
+
+        executable = Path(args[0]).name.lower()
+
+        if executable.endswith(".exe"):
+            executable = executable[:-4]
+
+        if executable not in ALLOWED_EXECUTABLES:
+            return (
+                "ToolError: executable is not allowed: "
+                f"{executable}"
+            )
+
+        # Allow only read-only Git inspection commands.
+        if executable == "git":
+            if len(args) < 2:
                 return (
-                    "ToolError: command blocked by safety policy: "
-                    f"{command}"
+                    "ToolError: git subcommand is required"
+                )
+
+            git_subcommand = args[1].lower()
+
+            if git_subcommand not in ALLOWED_GIT_SUBCOMMANDS:
+                return (
+                    "ToolError: git subcommand is not allowed: "
+                    f"{git_subcommand}"
                 )
 
         result = subprocess.run(
-            command,
+            args,
             cwd=WORKSPACE,
-            shell=True,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=COMMAND_TIMEOUT,
@@ -149,18 +217,30 @@ def run_command(command: str) -> str:
 
         return (
             f"Exit code: {result.returncode}\n\n"
-            f"STDOUT:\n{stdout or '(empty)'}\n\n"
-            f"STDERR:\n{stderr or '(empty)'}"
+            f"STDOUT:\n"
+            f"{stdout or '(empty)'}\n\n"
+            f"STDERR:\n"
+            f"{stderr or '(empty)'}"
         )
 
     except subprocess.TimeoutExpired:
         return (
-            f"ToolError: command exceeded timeout "
+            "ToolError: command exceeded timeout "
             f"({COMMAND_TIMEOUT} seconds)"
         )
 
+    except FileNotFoundError as exc:
+        return (
+            "ToolError: executable not found: "
+            f"{exc}"
+        )
+
     except Exception as exc:
-        return f"ToolError: {type(exc).__name__}: {exc}"
+        return (
+            f"ToolError: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
 TOOL_SCHEMAS = [
     {
         "type": "function",

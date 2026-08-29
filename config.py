@@ -10,9 +10,14 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-5.6")
 
 MAX_STEPS = int(os.getenv("MAX_STEPS", "20"))
-COMMAND_TIMEOUT = int(os.getenv("COMMAND_TIMEOUT", "30"))
 
+MAX_CONTEXT_STEPS = int(
+    os.getenv("MAX_CONTEXT_STEPS", "8")
+)
 
+COMMAND_TIMEOUT = int(
+    os.getenv("COMMAND_TIMEOUT", "30")
+)
 def validate_config():
     if not LLM_API_KEY:
         raise RuntimeError(
