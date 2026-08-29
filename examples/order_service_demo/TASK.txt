@@ -1,0 +1,2 @@
+The order-processing service has several failing tests.
+Inspect the project, identify the root causes, make minimal fixes, and run the full pytest suite to verify the result.
