@@ -1,5 +1,11 @@
 # Wen Coding Agent
 
+
+
+![architecture](C:\Users\brut8\wen-mini-coding-agent\assets\architecture.png)
+
+
+
 一个从零实现的轻量级 Coding Agent Harness。
 
 本项目实现了一个类似简化版 Claude Code / Codex / OpenCode 的编程智能体。Agent 通过大语言模型原生 Tool Calling，自主读取代码、搜索项目、修改文件、执行本地测试与开发命令，并根据工具返回结果持续决策，直到完成编程任务。
