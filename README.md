@@ -2,7 +2,7 @@
 
 
 
-![architecture](C:\Users\brut8\wen-mini-coding-agent\assets\architecture.png)
+![architecture](./assets/architecture.png)
 
 
 
